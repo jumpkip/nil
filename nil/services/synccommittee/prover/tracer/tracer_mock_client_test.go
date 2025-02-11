@@ -15,6 +15,7 @@ import (
 	"github.com/NilFoundation/nil/nil/services/rpc/jsonrpc"
 	"github.com/NilFoundation/nil/nil/services/rpc/transport"
 	"github.com/NilFoundation/nil/nil/services/synccommittee/prover/tracer/api"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/stretchr/testify/suite"
 )
 
@@ -82,10 +83,8 @@ func (s *TracerMockClientTestSuite) makeClient() client.Client {
 		s.Require().NoError(err)
 
 		// Build empty proof
-		holder := make(map[string][]byte)
-		tree := mpt.NewMPT(mpt.NewMapSetter(holder), mpt.NewReader(mpt.NewMapGetter(holder)))
 		key := []byte{0x1}
-		proof, err := mpt.BuildProof(tree.Reader, key, mpt.ReadMPTOperation)
+		proof, err := mpt.BuildProof(mpt.NewInMemMPT().Reader, key, mpt.ReadMPTOperation)
 		s.Require().NoError(err)
 		encodedProof, err := proof.Encode()
 		s.Require().NoError(err)
@@ -338,10 +337,12 @@ func (s *TracerMockClientTestSuite) TestSwapOperations() {
 }
 
 // Check that copy event finalizer is called
-func (s *TracerMockClientTestSuite) TestCopyEventFinalizer() {
+func (s *TracerMockClientTestSuite) TestKeccakOpCodeTracing() {
 	// Check two keccak opcodes, since they are finalized in different place:
 	// we have finalizer call after the previous opcode and at the end of transaction
 	dataToCopy, err := hex.DecodeString("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
+	expectedHash := crypto.Keccak256(dataToCopy)
+
 	s.Require().NoError(err)
 	initPush := append([]byte{byte(vm.PUSH32)}, dataToCopy...)
 	code := slices.Concat(initPush, []byte{
@@ -358,7 +359,15 @@ func (s *TracerMockClientTestSuite) TestCopyEventFinalizer() {
 	})
 	traceData := s.simpleContractCallTrace(code)
 
+	// check copy event tracer finalizer
 	s.Require().Len(traceData.CopyEvents, 2)
-	s.NotNil(traceData.CopyEvents[0].To.KeccakHash)
-	s.NotNil(traceData.CopyEvents[1].To.KeccakHash)
+	s.EqualValues(expectedHash, *traceData.CopyEvents[0].To.KeccakHash)
+	s.EqualValues(expectedHash, *traceData.CopyEvents[1].To.KeccakHash)
+
+	// check keccak tracer
+	s.Require().Len(traceData.KeccakTraces, 2)
+	s.EqualValues(dataToCopy, traceData.KeccakTraces[0].buf)
+	s.EqualValues(expectedHash, traceData.KeccakTraces[0].hash)
+	s.EqualValues(dataToCopy, traceData.KeccakTraces[1].buf)
+	s.EqualValues(expectedHash, traceData.KeccakTraces[1].hash)
 }
